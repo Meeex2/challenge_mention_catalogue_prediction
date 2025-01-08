@@ -6,3 +6,4 @@ hdbscan
 torch
 seaborn
 ipykernel
+transformers
