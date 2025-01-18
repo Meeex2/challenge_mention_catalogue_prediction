@@ -12,6 +12,8 @@ dependencies:
   - matplotlib
   - hdbscan
   - seaborn
+  - ipywidgets
   - ipykernel
   - pip
   - tqdm
+  - transformers
