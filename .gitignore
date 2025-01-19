@@ -2,6 +2,7 @@
 data/*
 !data/.gitkeep
 models/
+similarity_results/
 *.pth
 *.pkl
 
