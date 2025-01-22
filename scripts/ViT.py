@@ -12,7 +12,7 @@ from transformers import ViTImageProcessor, ViTModel
 
 
 class SimilarityVisualizer:
-    def __init__(self, output_dir: str = "data/similarity_results"):
+    def __init__(self, output_dir: str = "data/results"):
         """Initialize the visualizer with an output directory."""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -22,6 +22,7 @@ class SimilarityVisualizer:
         query_image_path: str,
         similar_images: List[Tuple[str, float]],
         session_id: str,
+        experiment_title: str,
     ) -> str:
         """Create a visual grid comparing query image with similar images."""
         # Create session directory
@@ -30,7 +31,8 @@ class SimilarityVisualizer:
 
         # Prepare the plot
         n_similar = len(similar_images)
-        _ = plt.figure(figsize=(15, 3 + (n_similar // 3) * 4))
+        plt.figure(figsize=(15, 3 + (n_similar // 3) * 4))
+        plt.suptitle(f"{experiment_title}\n{session_id}", fontsize=12, y=1.02)
 
         # Plot query image
         plt.subplot(1 + n_similar // 3, 3, 1)
@@ -48,16 +50,21 @@ class SimilarityVisualizer:
             plt.axis("off")
 
         # Save the visualization
-        viz_path = session_dir / f"comparison_{Path(query_image_path).stem}.png"
+        viz_name = f"{Path(query_image_path).stem}_results.png"
+        viz_path = session_dir / viz_name
         plt.tight_layout()
-        plt.savefig(viz_path)
+        plt.savefig(viz_path, bbox_inches="tight")
         plt.close()
 
         return str(viz_path)
 
 
 class ImageSimilaritySearch:
-    def __init__(self, model_name: str = "google/vit-base-patch16-224"):
+    def __init__(
+        self,
+        model_name: str = "google/vit-base-patch16-224",
+        experiment_name: str = "default_experiment",
+    ):
         """Initialize the image similarity search system with a ViT model."""
         self.processor = ViTImageProcessor.from_pretrained(model_name)
         self.model = ViTModel.from_pretrained(
@@ -67,7 +74,10 @@ class ImageSimilaritySearch:
         self.model.to(self.device)  # type: ignore
         self.catalog_embeddings = {}
         self.visualizer = SimilarityVisualizer()
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.experiment_name = experiment_name
+        self.session_id = (
+            f"{experiment_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
         self.results_history: Dict[str, List[Dict]] = {}
 
         # Create session directory immediately
@@ -141,9 +151,9 @@ class ImageSimilaritySearch:
 
                 # Generate visualization
                 viz_path = self.visualizer.visualize_results(
-                    query_image_path, results, self.session_id
+                    query_image_path, results, self.session_id, self.experiment_name
                 )
-                print(f"\nVisualization saved to: {viz_path}")
+                # print(f"\nVisualization saved to: {viz_path}")
             except Exception as e:
                 print(f"Error saving results: {e}")
 
@@ -199,7 +209,7 @@ class ImageSimilaritySearch:
             top_ks = [1, 3, 5, 10]
         max_k = max(top_ks)
 
-        # Load test labels
+        # Load test labels with extension-agnostic matching
         test_labels = {}
         try:
             with open(labels_csv, "r") as f:
@@ -208,14 +218,19 @@ class ImageSimilaritySearch:
                 for row in reader:
                     if len(row) < 2:
                         continue  # Skip invalid rows
-                    test_image = row[0].strip()
-                    correct_images = [img.strip() for img in row[1].split(",")]
+
+                    # Remove extensions from both test image and correct images
+                    test_image = Path(row[0].strip()).stem
+                    correct_images = [
+                        Path(img.strip()).stem for img in row[1].split(",")
+                    ]
+
                     test_labels[test_image] = correct_images
         except Exception as e:
             print(f"Error loading labels from {labels_csv}: {e}")
             return {}, 0, {}
 
-        # Process test images
+        # Process test images with extension-agnostic matching
         test_path = Path(test_dir)
         image_extensions = {".jpg", ".jpeg", ".png", ".webp"}
         test_files = [
@@ -226,54 +241,75 @@ class ImageSimilaritySearch:
         total_queries = 0
 
         for test_file in tqdm(test_files, desc="Evaluating hits@k"):
-            test_filename = test_file.name
-            if test_filename not in test_labels:
-                continue  # Skip images without labels
-            correct_images = test_labels[test_filename]
+            # Use stem for extension-agnostic matching
+            test_stem = test_file.stem
 
-            # Retrieve similar images without saving results
-            try:
-                similar_images = self.find_similar_images(
-                    str(test_file), top_k=max_k, save_results=False
-                )
-            except Exception as e:
-                print(f"Skipping {test_filename} due to error: {e}")
+            if test_stem not in test_labels:
+                print(f"Skipping unlabeled image: {test_file.name}")
                 continue
 
-            similar_filenames = [Path(path).name for path, _ in similar_images]
+            correct_images = test_labels[test_stem]
+
+            try:
+                # Get similar images (using full filename for search)
+                similar_images = self.find_similar_images(
+                    str(test_file), top_k=max_k, save_results=True
+                )
+            except Exception as e:
+                print(f"Skipping {test_file.name} due to error: {e}")
+                continue
+
+            # Compare using stems without extensions
+            similar_stems = [Path(path).stem for path, _ in similar_images]
 
             total_queries += 1
             for k in top_ks:
-                top_k_results = similar_filenames[:k]
-                if any(correct in top_k_results for correct in correct_images):
+                if any(correct in similar_stems[:k] for correct in correct_images):
                     hit_counts[k] += 1
 
         # Calculate hit rates
-        hit_rates = {}
-        for k in top_ks:
-            hit_rates[k] = hit_counts[k] / total_queries if total_queries > 0 else 0.0
+        hit_rates = {
+            k: hit_counts[k] / total_queries if total_queries > 0 else 0.0
+            for k in top_ks
+        }
 
         return hit_counts, total_queries, hit_rates
 
 
 def main():
     try:
-        # Initialize the search system
-        searcher = ImageSimilaritySearch()
+        # Initialize the search system with experiment name
+        experiment_name = "bg_removed_evaluation"
+        searcher = ImageSimilaritySearch(experiment_name=experiment_name)
 
-        # Build the catalog
-        catalog_dir = "data/DAM"
-        searcher.build_catalog(catalog_dir)
+        # Preprocess images with background removal
 
-        # Evaluate hits@k
-        test_dir = "data/test_image_headmind"
-        labels_csv = "test_labels.csv"
-        hit_counts, total_queries, hit_rates = searcher.hits_at_k(test_dir, labels_csv)
+        # Process catalog images
+        # remove_backgrounds(
+        #     input_folder="data/DAM",
+        #     output_folder="data/DAM_bg_removed",
+        # )
 
-        # Display results
+        # # Process test images
+        # remove_backgrounds(
+        #     input_folder="data/test_image_headmind",
+        #     output_folder="data/test_bg_removed",
+        # )
+
+        # Build catalog with bg-removed images
+        searcher.build_catalog("data/DAM")
+
+        # Evaluate using bg-removed test images
+        hit_counts, total_queries, hit_rates = searcher.hits_at_k(
+            test_dir="data/test_bg_removed", labels_csv="test_labels.csv"
+        )
+
+        # Print results
         print("\nEvaluation Results:")
         for k in sorted(hit_rates.keys()):
             print(f"Hit@{k}: {hit_rates[k]:.4f} ({hit_counts[k]}/{total_queries})")
+
+        print(f"\nAll results saved to: data/results/{searcher.session_id}")
 
     except Exception as e:
         print(f"An error occurred: {e}")
