@@ -279,6 +279,7 @@ class ViTContrastiveRetrieval:
         self,
         query_image_path: str,
         top_k: int = 5,
+        visualize: bool = True,  # Add visualize parameter
     ) -> List[Tuple[str, float]]:
         query_image = Image.open(query_image_path).convert("RGB")
         query_embedding = self.get_embedding(query_image)
@@ -293,7 +294,8 @@ class ViTContrastiveRetrieval:
         similarities.sort(key=lambda x: x[1], reverse=True)
         results = similarities[:top_k]
 
-        self._visualize_results(query_image_path, results)
+        if visualize:  # Conditionally visualize
+            self._visualize_results(query_image_path, results)
         return results
 
     def _visualize_results(self, query_path: str, results: List[Tuple[str, float]]):
@@ -321,36 +323,40 @@ class ViTContrastiveRetrieval:
 
 
 def main():
-    # df = pd.read_csv("data/product_list.csv")
-    # categories = sorted(df["Product_BusinessUnitDesc"].unique())
-
     vit = ViTContrastiveRetrieval()
-    processor = vit.processor
-
-    # full_dataset = ProductDataset("data/DAM", "data/product_list.csv", processor)
-    # train_size = int(0.8 * len(full_dataset))
-    # val_size = len(full_dataset) - train_size
-    # train_dataset, val_dataset = torch.utils.data.random_split(
-    #     full_dataset, [train_size, val_size]
-    # )
-
-    # train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4)
-    # val_loader = DataLoader(val_dataset, batch_size=8, num_workers=4)
-
-    # vit.train(train_loader, val_loader, num_epochs=8)
-
-    # Load pretrained weights
     vit.load_weights("models/vit_contrastive_2.pth")
     vit.build_catalog("data/DAM")
 
-    test_dir = "data/test_image_headmind"
-    for test_file in Path(test_dir).glob("*"):
-        print(f"\nProcessing test image: {test_file}")
-        similar_images = vit.find_similar_images(str(test_file))
+    # Load test labels and prepare evaluation
+    test_df = pd.read_csv("test_labels.csv")
+    hit_counts = {1: 0, 3: 0, 5: 0, 10: 0}
+    total = 0  # Actual processed count (excluding missing images)
 
-        print("Most similar catalog images:")
-        for path, similarity in similar_images:
-            print(f"Similarity: {similarity:.3f} - Path: {path}")
+    for _, row in tqdm(test_df.iterrows(), total=len(test_df), desc="Evaluating"):
+        test_img_path = Path("data/test_image_headmind") / row["test_image_name"]
+        correct_label = row["label_image_name"]
+
+        if not test_img_path.exists():
+            continue  # Skip missing test images
+
+        # Retrieve top 10 results without visualization
+        results = vit.find_similar_images(str(test_img_path), top_k=10, visualize=False)
+
+        # Extract just the filenames from catalog paths
+        retrieved_files = [Path(path).name for path, _ in results]
+
+        # Update hit counts for each k
+        for k in hit_counts:
+            if correct_label in retrieved_files[:k]:
+                hit_counts[k] += 1
+
+        total += 1  # Only count processed images
+
+    # Calculate and print metrics
+    print("\nHit@k Metrics:")
+    for k in [1, 3, 5, 10]:
+        hit_rate = hit_counts[k] / total if total > 0 else 0
+        print(f"Hit@{k}: {hit_rate:.4f} ({hit_counts[k]}/{total})")
 
 
 if __name__ == "__main__":

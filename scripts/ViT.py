@@ -1,7 +1,7 @@
 import csv
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -181,6 +181,80 @@ class ImageSimilaritySearch:
             print(f"Error saving results to {results_file}: {e}")
             raise
 
+    def hits_at_k(
+        self,
+        test_dir: str,
+        labels_csv: str,
+        top_ks: Optional[List[int]] = None,
+    ) -> Tuple[Dict[int, int], int, Dict[int, float]]:
+        """
+        Evaluate hits@k metrics for given test images and labels.
+        Returns:
+            Tuple containing:
+                - Dictionary of hit counts for each k
+                - Total number of queries processed
+                - Dictionary of hit rates for each k
+        """
+        if top_ks is None:
+            top_ks = [1, 3, 5, 10]
+        max_k = max(top_ks)
+
+        # Load test labels
+        test_labels = {}
+        try:
+            with open(labels_csv, "r") as f:
+                reader = csv.reader(f)
+                next(reader)  # Skip header
+                for row in reader:
+                    if len(row) < 2:
+                        continue  # Skip invalid rows
+                    test_image = row[0].strip()
+                    correct_images = [img.strip() for img in row[1].split(",")]
+                    test_labels[test_image] = correct_images
+        except Exception as e:
+            print(f"Error loading labels from {labels_csv}: {e}")
+            return {}, 0, {}
+
+        # Process test images
+        test_path = Path(test_dir)
+        image_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+        test_files = [
+            f for f in test_path.glob("*") if f.suffix.lower() in image_extensions
+        ]
+
+        hit_counts = {k: 0 for k in top_ks}
+        total_queries = 0
+
+        for test_file in tqdm(test_files, desc="Evaluating hits@k"):
+            test_filename = test_file.name
+            if test_filename not in test_labels:
+                continue  # Skip images without labels
+            correct_images = test_labels[test_filename]
+
+            # Retrieve similar images without saving results
+            try:
+                similar_images = self.find_similar_images(
+                    str(test_file), top_k=max_k, save_results=False
+                )
+            except Exception as e:
+                print(f"Skipping {test_filename} due to error: {e}")
+                continue
+
+            similar_filenames = [Path(path).name for path, _ in similar_images]
+
+            total_queries += 1
+            for k in top_ks:
+                top_k_results = similar_filenames[:k]
+                if any(correct in top_k_results for correct in correct_images):
+                    hit_counts[k] += 1
+
+        # Calculate hit rates
+        hit_rates = {}
+        for k in top_ks:
+            hit_rates[k] = hit_counts[k] / total_queries if total_queries > 0 else 0.0
+
+        return hit_counts, total_queries, hit_rates
+
 
 def main():
     try:
@@ -191,22 +265,15 @@ def main():
         catalog_dir = "data/DAM"
         searcher.build_catalog(catalog_dir)
 
-        # Process test images
+        # Evaluate hits@k
         test_dir = "data/test_image_headmind"
-        test_files = [
-            f
-            for f in Path(test_dir).glob("*")
-            if f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-        ]
+        labels_csv = "test_labels.csv"
+        hit_counts, total_queries, hit_rates = searcher.hits_at_k(test_dir, labels_csv)
 
-        # Find similar images for each test image
-        for test_file in test_files:
-            print(f"\nProcessing test image: {test_file}")
-            similar_images = searcher.find_similar_images(str(test_file))
-
-            print("Most similar catalog images:")
-            for path, similarity in similar_images:
-                print(f"Similarity: {similarity:.3f} - Path: {path}")
+        # Display results
+        print("\nEvaluation Results:")
+        for k in sorted(hit_rates.keys()):
+            print(f"Hit@{k}: {hit_rates[k]:.4f} ({hit_counts[k]}/{total_queries})")
 
     except Exception as e:
         print(f"An error occurred: {e}")
