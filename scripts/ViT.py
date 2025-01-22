@@ -1,4 +1,4 @@
-import json
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -115,7 +115,7 @@ class ImageSimilaritySearch:
                 print(f"Skipping {img_path}: {e}")
 
     def find_similar_images(
-        self, query_image_path: str, top_k: int = 5, save_results: bool = True
+        self, query_image_path: str, top_k: int = 20, save_results: bool = True
     ) -> List[Tuple[str, float]]:
         """Find the most similar images to the query image."""
         # Get query image embedding
@@ -151,23 +151,32 @@ class ImageSimilaritySearch:
 
     def save_results(self, query_image_path: str, results: List[Tuple[str, float]]):
         """Save search results to history."""
-        query_path = str(query_image_path)
-        if query_path not in self.results_history:
-            self.results_history[query_path] = []
+        query_name = Path(query_image_path).name
+        if query_name not in self.results_history:
+            self.results_history[query_name] = []
 
         result_entry = {
             "timestamp": datetime.now().isoformat(),
             "similar_images": [
-                {"path": path, "similarity": similarity} for path, similarity in results
+                {"name": Path(path).name, "similarity": similarity}
+                for path, similarity in results
             ],
         }
-        self.results_history[query_path].append(result_entry)
+        self.results_history[query_name].append(result_entry)
 
         # Ensure the directory exists and save results
-        results_file = self.session_dir / "results_history.json"
+        results_file = self.session_dir / "results_history.csv"
         try:
-            with open(results_file, "w") as f:
-                json.dump(self.results_history, f, indent=2)
+            with open(results_file, "w", newline="") as f:
+                writer = csv.writer(f)
+                header = ["test_image"] + [f"similar_image{i}" for i in range(20)]
+                writer.writerow(header)
+                for query, entries in self.results_history.items():
+                    for entry in entries:
+                        row = [query] + [
+                            img["name"] for img in entry["similar_images"][:20]
+                        ]
+                        writer.writerow(row)
         except Exception as e:
             print(f"Error saving results to {results_file}: {e}")
             raise
