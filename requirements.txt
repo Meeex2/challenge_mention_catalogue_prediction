@@ -6,3 +6,5 @@ hdbscan
 torch
 seaborn
 ipykernel
+imagehash
+pillow
