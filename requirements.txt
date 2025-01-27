@@ -8,3 +8,6 @@ seaborn
 ipykernel
 imagehash
 pillow
+pillow
+transformers
+torchvision
