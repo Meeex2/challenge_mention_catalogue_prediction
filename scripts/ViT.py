@@ -1,4 +1,5 @@
 import csv
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -62,7 +63,7 @@ class SimilarityVisualizer:
 class ImageSimilaritySearch:
     def __init__(
         self,
-        model_name: str = "google/vit-base-patch16-224",
+        model_name: str = "google/vit-base-patch16-224-in21k",
         experiment_name: str = "default_experiment",
     ):
         """Initialize the image similarity search system with a ViT model."""
@@ -94,14 +95,29 @@ class ImageSimilaritySearch:
             raise
 
     def get_embedding(self, image: Image.Image) -> torch.Tensor:
-        """Generate embedding for a single image."""
-        inputs = self.processor(images=image, return_tensors="pt")  # type: ignore
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        """Generate embedding for a single image with augmentations."""
+        augmentations = [
+            image,
+            image.rotate(90),
+            image.rotate(180),
+            image.rotate(270),
+            image.transpose(Image.FLIP_LEFT_RIGHT),
+            image.transpose(Image.FLIP_TOP_BOTTOM),
+        ]
 
-        with torch.no_grad():
-            outputs = self.model(**inputs)
+        embeddings = []
+        for aug_image in augmentations:
+            inputs = self.processor(images=aug_image, return_tensors="pt")  # type: ignore
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        return outputs.pooler_output.cpu().numpy()[0]
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+
+            embeddings.append(outputs.pooler_output.cpu().numpy()[0])
+
+        # Average the embeddings
+        avg_embedding = np.mean(embeddings, axis=0)
+        return avg_embedding
 
     def build_catalog(self, catalog_dir: str):
         """Build embeddings for all images in the catalog directory."""
@@ -281,6 +297,7 @@ def main():
         # Initialize the search system with experiment name
         experiment_name = "bg_removed_evaluation"
         searcher = ImageSimilaritySearch(experiment_name=experiment_name)
+        visualizer = SimilarityVisualizer()
 
         # Preprocess images with background removal
 
@@ -301,7 +318,7 @@ def main():
 
         # Evaluate using bg-removed test images
         hit_counts, total_queries, hit_rates = searcher.hits_at_k(
-            test_dir="data/test_bg_removed", labels_csv="test_labels.csv"
+            test_dir="data/test_bg_removed", labels_csv="data/labels.csv"
         )
 
         # Print results
@@ -309,6 +326,15 @@ def main():
         for k in sorted(hit_rates.keys()):
             print(f"Hit@{k}: {hit_rates[k]:.4f} ({hit_counts[k]}/{total_queries})")
 
+        test_images = os.listdir("data/test_bg_removed")
+        for test_image in test_images[:5]:  # Visualize first 5 test images
+            query_image_path = os.path.join("data/test_bg_removed", test_image)
+            results = searcher.find_similar_images(
+                query_image_path, top_k=5, save_results=False
+            )
+            visualizer.visualize_results(
+                query_image_path, results, searcher.session_id, experiment_name
+            )
         print(f"\nAll results saved to: data/results/{searcher.session_id}")
 
     except Exception as e:
