@@ -6,3 +6,6 @@ hdbscan
 torch
 seaborn
 ipykernel
+pillow
+transformers
+torchvision
