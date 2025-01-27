@@ -94,8 +94,8 @@ class ImageSimilaritySearch:
             print(f"Error loading image {image_path}: {e}")
             raise
 
-    def get_embedding(self, image: Image.Image) -> torch.Tensor:
-        """Generate embedding for a single image with augmentations."""
+    def get_embedding(self, image: Image.Image) -> np.ndarray:
+        """Generate embedding for a single image with augmentations and color histograms."""
         augmentations = [
             image,
             image.rotate(90),
@@ -117,7 +117,31 @@ class ImageSimilaritySearch:
 
         # Average the embeddings
         avg_embedding = np.mean(embeddings, axis=0)
-        return avg_embedding
+
+        # Calculate color histograms
+        color_histograms = self.calculate_color_histograms(image)
+
+        # Concatenate embeddings with color histograms
+        final_embedding = np.concatenate((avg_embedding, color_histograms))
+
+        return final_embedding
+
+    def calculate_color_histograms(self, image: Image.Image) -> np.ndarray:
+        """Calculate color histograms for the image."""
+        image_np = np.array(image)
+        hist_r = np.histogram(image_np[:, :, 0], bins=16, range=(0, 256))[0]
+        hist_g = np.histogram(image_np[:, :, 1], bins=16, range=(0, 256))[0]
+        hist_b = np.histogram(image_np[:, :, 2], bins=16, range=(0, 256))[0]
+
+        # Normalize histograms
+        hist_r = hist_r / np.sum(hist_r)
+        hist_g = hist_g / np.sum(hist_g)
+        hist_b = hist_b / np.sum(hist_b)
+
+        # Concatenate histograms into a single vector
+        color_histograms = np.concatenate((hist_r, hist_g, hist_b))
+
+        return color_histograms
 
     def build_catalog(self, catalog_dir: str):
         """Build embeddings for all images in the catalog directory."""
