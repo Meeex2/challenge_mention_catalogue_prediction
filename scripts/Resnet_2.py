@@ -294,8 +294,8 @@ class ImageSimilaritySearch:
     def build_catalog(self, catalog_dir: str, batch_size: int = 32):
         """Build embeddings for all images in catalog."""
         catalog_path = Path(catalog_dir)
-        image_files = list(catalog_path.glob("**/*.jpg")) + list(
-            catalog_path.glob("**/*.png")
+        image_files = list(catalog_path.rglob("*.jpeg")) + list(
+            catalog_path.rglob("*.png")
         )
 
         for i in tqdm(range(0, len(image_files), batch_size)):
@@ -346,33 +346,39 @@ class ImageSimilaritySearch:
 
 
 def create_train_val_split(
-    csv_path: str, train_ratio: float = 0.66
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Create train/val split from original CSV file."""
+    csv_path: str, train_ratio: float = 0.66, val_ratio: float = 0.17
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create train/val/test split from original CSV file."""
     df = pd.read_csv(csv_path)
 
     # Shuffle the dataframe
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
-    # Calculate split index
-    split_idx = int(len(df) * train_ratio)
+    # Calculate split indices
+    train_idx = int(len(df) * train_ratio)
+    val_idx = train_idx + int(len(df) * val_ratio)
 
-    # Split into train and validation
-    train_df = df[:split_idx]
-    val_df = df[split_idx:]
+    # Split into train, validation, and test
+    train_df = df[:train_idx]
+    val_df = df[train_idx:val_idx]
+    test_df = df[val_idx:]
 
-    return train_df, val_df
+    return train_df, val_df, test_df
 
 
 def save_split_csvs(
-    train_df: pd.DataFrame, val_df: pd.DataFrame, output_dir: str = "data"
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    output_dir: str = "data",
 ):
-    """Save train and validation splits to CSV files."""
+    """Save train, validation, and test splits to CSV files."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     train_df.to_csv(output_dir / "train_labels.csv", index=False)
     val_df.to_csv(output_dir / "val_labels.csv", index=False)
+    test_df.to_csv(output_dir / "test_labels.csv", index=False)
 
 
 def visualize_triplets(dataset: SimilarityDataset, num_examples: int = 3):
@@ -434,7 +440,7 @@ def visualize_triplets(dataset: SimilarityDataset, num_examples: int = 3):
     plt.show()
 
 
-def main():
+if __name__ == "__main__":
     print("Starting ResNet similarity training pipeline...")
 
     # Set random seed for reproducibility
@@ -444,8 +450,8 @@ def main():
 
     # Create train/val split
     print("Creating train/val split...")
-    train_df, val_df = create_train_val_split("data/test_labels.csv")
-    save_split_csvs(train_df, val_df)
+    train_df, val_df, test_df = create_train_val_split("data/labels.csv")
+    save_split_csvs(train_df, val_df, test_df)
 
     # Initialize trainer
     trainer = SimilarityTrainer(model_save_dir="models/resnet_similarity")
@@ -464,6 +470,12 @@ def main():
         labels_dir="data/DAM",
     )
 
+    test_dataset = SimilarityDataset(
+        csv_file="data/test_labels.csv",
+        images_dir="data/test_bg_removed",
+        labels_dir="data/DAM",
+    )
+
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
 
@@ -477,8 +489,8 @@ def main():
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         batch_size=8,  # Smaller batch size to handle potential memory constraints
-        num_epochs=20,  # Reduced epochs for faster iteration
-        learning_rate=0.0001,
+        num_epochs=4,  # Reduced epochs for faster iteration
+        learning_rate=0.001,
     )
 
     # Initialize search system
@@ -493,7 +505,6 @@ def main():
 
     # Evaluate on test set
     print("\nEvaluating model...")
-    test_results = []
     total_hits = {1: 0, 5: 0, 10: 0}
     total_queries = 0
 
@@ -501,15 +512,17 @@ def main():
     test_df = pd.read_csv("data/test_labels.csv")
 
     for idx, row in tqdm(test_df.iterrows(), total=len(test_df), desc="Evaluating"):
-        query_image = f"data/test_bg_removed/{row['label_image_name']}"
-        if not Path(query_image).exists():
-            continue
+        query_image = (
+            f"data/test_bg_removed/{row['test_image_name'].replace('.jpg', '.png')}"
+        )
 
         # Get similar images
         similar_images = searcher.find_similar(query_image, top_k=10)
 
         # Get ground truth matches
-        true_matches = set([row["image_name"]])  # Adjust based on your CSV structure
+        true_matches = set(
+            [row["label_image_name"]]
+        )  # Adjust based on your CSV structure
 
         # Check hits@k
         for k in [1, 5, 10]:
@@ -526,7 +539,3 @@ def main():
         print(f"Hits@{k}: {hit_rate:.4f} ({total_hits[k]}/{total_queries})")
 
     print("\nTraining and evaluation pipeline completed!")
-
-
-if __name__ == "__main__":
-    main()

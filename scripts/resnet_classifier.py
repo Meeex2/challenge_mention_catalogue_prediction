@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from PIL import Image
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import models, transforms
@@ -27,12 +28,6 @@ class DAMDataset(Dataset):
         mmc_to_category: Dict[str, str],
         transform: Optional[transforms.Compose] = None,
     ):
-        """
-        Args:
-            image_dir: Directory containing the images
-            mmc_to_category: Mapping from MMC codes to category names
-            transform: Optional transforms to be applied to images
-        """
         self.image_dir = image_dir
         self.image_files = sorted(os.listdir(image_dir))
         self.mmc_to_category = mmc_to_category
@@ -52,41 +47,63 @@ class DAMDataset(Dataset):
         image = Image.open(image_path).convert("RGB")
 
         if self.transform:
-            image = self.transform(image)  # transform will handle conversion to tensor
+            image = self.transform(image)
         else:
-            # If no transform is provided, at least convert to tensor
             image = transforms.ToTensor()(image)
 
         return image, category_idx  # type: ignore
 
 
 class CategoryClassifier:
-    """VGG16-based image classifier for product categories."""
+    """ResNet-based image classifier for product categories with version selection."""
 
     def __init__(
         self,
         num_classes: int,
+        resnet_version: int = 50,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        model_save_path: str = "resnet_category_classifier.pth",
     ):
-        """
-        Args:
-            num_classes: Number of product categories
-            device: Device to run the model on ('cuda' or 'cpu')
-        """
         self.device = device
+        self.resnet_version = resnet_version
+        self.model_save_path = model_save_path
         self.model = self._initialize_model(num_classes)
+        self._load_model_if_exists()
         logging.info(
-            f"Initialized CategoryClassifier with {num_classes} classes on {device}"
+            f"Initialized ResNet-{resnet_version} classifier with {num_classes} classes on {device}"
         )
 
     def _initialize_model(self, num_classes: int) -> nn.Module:
-        model = models.vgg16(weights="VGG16_Weights.DEFAULT")
-        # Freeze early layers
-        for param in list(model.parameters())[:-4]:
+        # Load pretrained ResNet with specified version
+        if self.resnet_version == 50:
+            weights = models.ResNet50_Weights.DEFAULT
+            model = models.resnet50(weights=weights)
+        elif self.resnet_version == 101:
+            weights = models.ResNet101_Weights.DEFAULT
+            model = models.resnet101(weights=weights)
+        elif self.resnet_version == 152:
+            weights = models.ResNet152_Weights.DEFAULT
+            model = models.resnet152(weights=weights)
+        else:
+            raise ValueError(f"Unsupported ResNet version: {self.resnet_version}")
+
+        # Freeze all parameters except final layer
+        for param in model.parameters():
             param.requires_grad = False
-        # Replace classification head
-        model.classifier[6] = nn.Linear(4096, num_classes)
+
+        # Replace final fully connected layer
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, num_classes)
+
         return model.to(self.device)
+
+    def _load_model_if_exists(self):
+        """Load the model if a saved model exists."""
+        if os.path.exists(self.model_save_path):
+            self.model.load_state_dict(
+                torch.load(self.model_save_path, weights_only=True)
+            )
+            logging.info(f"Loaded model from {self.model_save_path}")
 
     def train(
         self,
@@ -94,18 +111,7 @@ class CategoryClassifier:
         val_loader: DataLoader,
         num_epochs: int = 10,
         learning_rate: float = 0.001,
-        model_save_path: str = "best_model.pth",
     ) -> None:
-        """
-        Train the classifier.
-
-        Args:
-            train_loader: DataLoader for training data
-            val_loader: DataLoader for validation data
-            num_epochs: Number of training epochs
-            learning_rate: Initial learning rate
-            model_save_path: Path to save the best model
-        """
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -115,19 +121,13 @@ class CategoryClassifier:
         best_val_loss = float("inf")
 
         for epoch in tqdm(range(num_epochs), desc="Training"):
-            # Training phase
             train_loss = self._train_epoch(train_loader, criterion, optimizer)
-
-            # Validation phase
-            val_loss = self._validate_epoch(val_loader, criterion)
-
-            # Update learning rate
+            val_loss, accuracy = self._validate_epoch(val_loader, criterion)
             scheduler.step(val_loss)
 
-            # Save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                torch.save(self.model.state_dict(), model_save_path)
+                torch.save(self.model.state_dict(), self.model_save_path)
                 logging.info(
                     f"Saved new best model with validation loss: {val_loss:.4f}"
                 )
@@ -135,7 +135,8 @@ class CategoryClassifier:
             logging.info(
                 f"Epoch {epoch + 1}/{num_epochs} - "
                 f"Train Loss: {train_loss:.4f} - "
-                f"Val Loss: {val_loss:.4f}"
+                f"Val Loss: {val_loss:.4f} - "
+                f"Accuracy: {accuracy * 100:.4f}%"
             )
 
     def _train_epoch(
@@ -155,17 +156,25 @@ class CategoryClassifier:
 
         return total_loss / len(train_loader)
 
-    def _validate_epoch(self, val_loader: DataLoader, criterion: nn.Module) -> float:
+    def _validate_epoch(
+        self, val_loader: DataLoader, criterion: nn.Module
+    ) -> Tuple[float, float]:
         self.model.eval()
         total_loss = 0.0
+        correct = 0
+        total = 0
 
         with torch.no_grad():
             for images, labels in val_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
                 total_loss += criterion(outputs, labels).item()
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
 
-        return total_loss / len(val_loader)
+        accuracy = correct / total
+        return total_loss / len(val_loader), accuracy
 
     def predict(self, image: torch.Tensor) -> int:
         """
@@ -183,29 +192,6 @@ class CategoryClassifier:
             output = self.model(image)
             _, predicted = torch.max(output.data, 1)
             return int(predicted.item())
-
-
-def get_transforms(is_training: bool = True) -> transforms.Compose:
-    """
-    Get image transforms for training or validation.
-
-    Args:
-        is_training: Whether to include data augmentation transforms
-
-    Returns:
-        Composition of transforms
-    """
-    base_transforms = [
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
-
-    if is_training:
-        base_transforms.insert(1, transforms.RandomHorizontalFlip())
-        base_transforms.insert(2, transforms.ColorJitter(brightness=0.2, contrast=0.2))
-
-    return transforms.Compose(base_transforms)
 
 
 def create_train_val_datasets(
@@ -239,55 +225,95 @@ def create_train_val_datasets(
     return train_dataset, val_dataset
 
 
+def get_transforms(is_training: bool = True) -> transforms.Compose:
+    base_transforms = [
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+
+    if is_training:
+        base_transforms.insert(1, transforms.RandomHorizontalFlip())
+        base_transforms.insert(2, transforms.ColorJitter(brightness=0.2, contrast=0.2))
+
+    return transforms.Compose(base_transforms)
+
+
+def evaluate_model(classifier: CategoryClassifier, val_loader: DataLoader) -> None:
+    y_true = []
+    y_pred = []
+
+    classifier.model.eval()
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images, labels = (
+                images.to(classifier.device),
+                labels.to(classifier.device),
+            )
+            outputs = classifier.model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            y_true.extend(labels.cpu().numpy())
+            y_pred.extend(predicted.cpu().numpy())
+
+    f1 = f1_score(y_true, y_pred, average="weighted")
+    recall = recall_score(y_true, y_pred, average="weighted")
+    precision = precision_score(y_true, y_pred, average="weighted")
+    accuracy = accuracy_score(y_true, y_pred)
+
+    logging.info(f"F1 Score: {f1:.4f}")
+    logging.info(f"Recall: {recall:.4f}")
+    logging.info(f"Precision: {precision:.4f}")
+    logging.info(f"Accuracy: {accuracy:.4f}")
+
+
 def main():
     # Configuration
+    RESNET_VERSION = 50  # Change to 50, 101, or 152 as needed
     DATA_DIR = "./data"
     DAM_DIR = os.path.join(DATA_DIR, "DAM")
     CSV_PATH = os.path.join(DATA_DIR, "product_list.csv")
-    MODEL_SAVE_PATH = os.path.join("models", "vgg_model.pth")
-    BATCH_SIZE = 64
-    NUM_EPOCHS = 10
+    MODEL_SAVE_PATH = os.path.join("models", f"resnet_{RESNET_VERSION}_model.pth")
+    BATCH_SIZE = 32
+    NUM_EPOCHS = 5
     VAL_SIZE = 0.2
     RANDOM_STATE = 42
 
-    # Load and prepare data
+    # Data loading and preprocessing
     df = pd.read_csv(CSV_PATH)
     df.columns = df.columns.str.strip()
     mmc_to_category = dict(zip(df["MMC"], df["Product_BusinessUnitDesc"]))
     categories = sorted(df["Product_BusinessUnitDesc"].unique())
 
-    # Create full dataset
     full_dataset = DAMDataset(
         image_dir=DAM_DIR,
         mmc_to_category=mmc_to_category,
-        transform=get_transforms(
-            is_training=True
-        ),  # We'll apply specific transforms later
+        transform=get_transforms(is_training=True),
     )
 
-    # Split dataset
     train_dataset, val_dataset = create_train_val_datasets(
         full_dataset, val_size=VAL_SIZE, random_state=RANDOM_STATE
     )
 
-    # Apply appropriate transforms
-    train_dataset.dataset.transform = get_transforms(is_training=True)  # type: ignore
-    val_dataset.dataset.transform = get_transforms(is_training=False)  # type: ignore
-
-    # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
     # Initialize and train classifier
-    classifier = CategoryClassifier(num_classes=len(categories))
+    classifier = CategoryClassifier(
+        num_classes=len(categories),
+        resnet_version=RESNET_VERSION,
+        model_save_path=MODEL_SAVE_PATH,
+    )
     classifier.train(
         train_loader=train_loader,
         val_loader=val_loader,
         num_epochs=NUM_EPOCHS,
-        model_save_path=MODEL_SAVE_PATH,
     )
 
     logging.info("Training completed successfully")
+
+    # Load the best model and evaluate
+    classifier.model.load_state_dict(torch.load(MODEL_SAVE_PATH, weights_only=True))
+    evaluate_model(classifier, train_loader)
 
 
 if __name__ == "__main__":

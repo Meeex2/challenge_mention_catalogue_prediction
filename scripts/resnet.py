@@ -1,5 +1,4 @@
 import csv
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -9,7 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import ViTImageProcessor, ViTModel
+from transformers import AutoImageProcessor, ResNetForImageClassification
 
 
 class SimilarityVisualizer:
@@ -63,14 +62,12 @@ class SimilarityVisualizer:
 class ImageSimilaritySearch:
     def __init__(
         self,
-        model_name: str = "google/vit-base-patch16-224-in21k",
+        model_name: str = "microsoft/resnet-50",
         experiment_name: str = "default_experiment",
     ):
-        """Initialize the image similarity search system with a ViT model."""
-        self.processor = ViTImageProcessor.from_pretrained(model_name)
-        self.model = ViTModel.from_pretrained(
-            model_name, attn_implementation="sdpa", torch_dtype=torch.float16
-        )
+        """Initialize the image similarity search system with a ResNet model."""
+        self.processor = AutoImageProcessor.from_pretrained(model_name)
+        self.model = ResNetForImageClassification.from_pretrained(model_name)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)  # type: ignore
         self.catalog_embeddings = {}
@@ -94,54 +91,15 @@ class ImageSimilaritySearch:
             print(f"Error loading image {image_path}: {e}")
             raise
 
-    def get_embedding(self, image: Image.Image) -> np.ndarray:
-        """Generate embedding for a single image with augmentations and color histograms."""
-        augmentations = [
-            image,
-            image.rotate(90),
-            image.rotate(180),
-            image.rotate(270),
-            image.transpose(Image.FLIP_LEFT_RIGHT),
-            image.transpose(Image.FLIP_TOP_BOTTOM),
-        ]
+    def get_embedding(self, image: Image.Image) -> torch.Tensor:
+        """Generate embedding for a single image."""
+        inputs = self.processor(images=image, return_tensors="pt")  # type: ignore
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        embeddings = []
-        for aug_image in augmentations:
-            inputs = self.processor(images=aug_image, return_tensors="pt")  # type: ignore
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            logits = self.model(**inputs).logits
 
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-
-            embeddings.append(outputs.pooler_output.cpu().numpy()[0])
-
-        # Average the embeddings
-        avg_embedding = np.mean(embeddings, axis=0)
-
-        # Calculate color histograms
-        color_histograms = self.calculate_color_histograms(image)
-
-        # Concatenate embeddings with color histograms
-        final_embedding = np.concatenate((avg_embedding, color_histograms))
-
-        return final_embedding
-
-    def calculate_color_histograms(self, image: Image.Image) -> np.ndarray:
-        """Calculate color histograms for the image."""
-        image_np = np.array(image)
-        hist_r = np.histogram(image_np[:, :, 0], bins=16, range=(0, 256))[0]
-        hist_g = np.histogram(image_np[:, :, 1], bins=16, range=(0, 256))[0]
-        hist_b = np.histogram(image_np[:, :, 2], bins=16, range=(0, 256))[0]
-
-        # Normalize histograms
-        hist_r = hist_r / np.sum(hist_r)
-        hist_g = hist_g / np.sum(hist_g)
-        hist_b = hist_b / np.sum(hist_b)
-
-        # Concatenate histograms into a single vector
-        color_histograms = np.concatenate((hist_r, hist_g, hist_b))
-
-        return color_histograms
+        return logits.cpu().numpy()[0]
 
     def build_catalog(self, catalog_dir: str):
         """Build embeddings for all images in the catalog directory."""
@@ -316,35 +274,13 @@ class ImageSimilaritySearch:
         return hit_counts, total_queries, hit_rates
 
 
-def showcase_augmentations():
-    image = Image.open("data/test_bg_removed/IMG_6944.png")
-    augmentations = [
-        image,
-        image.rotate(90),
-        image.rotate(180),
-        image.rotate(270),
-        image.transpose(Image.FLIP_LEFT_RIGHT),
-        image.transpose(Image.FLIP_TOP_BOTTOM),
-    ]
-
-    plt.figure(figsize=(15, 10))
-    for i, aug_image in enumerate(augmentations):
-        plt.subplot(2, 3, i + 1)
-        plt.imshow(aug_image)
-        plt.title(f"Augmentation {i + 1}")
-        plt.axis("off")
-    plt.tight_layout()
-    plt.show()
-
-
 def main():
     try:
         # Initialize the search system with experiment name
-        experiment_name = "bg_removed_evaluation"
+        experiment_name = "bg_removed_evaluation_clip_vit_patch32"
         searcher = ImageSimilaritySearch(experiment_name=experiment_name)
-        visualizer = SimilarityVisualizer()
 
-        # Preprocess images with background removal
+        # Preprocess images with background removal (only once)
 
         # Process catalog images
         # remove_backgrounds(
@@ -371,15 +307,6 @@ def main():
         for k in sorted(hit_rates.keys()):
             print(f"Hit@{k}: {hit_rates[k]:.4f} ({hit_counts[k]}/{total_queries})")
 
-        test_images = os.listdir("data/test_bg_removed")
-        for test_image in test_images[:5]:  # Visualize first 5 test images
-            query_image_path = os.path.join("data/test_bg_removed", test_image)
-            results = searcher.find_similar_images(
-                query_image_path, top_k=5, save_results=False
-            )
-            visualizer.visualize_results(
-                query_image_path, results, searcher.session_id, experiment_name
-            )
         print(f"\nAll results saved to: data/results/{searcher.session_id}")
 
     except Exception as e:

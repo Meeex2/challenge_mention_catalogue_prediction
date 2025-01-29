@@ -7,4 +7,6 @@ torch
 torchvision
 seaborn
 ipykernel
+pillow
 transformers
+torchvision
