@@ -1,6 +1,7 @@
 # data
 data/*
 !data/.gitkeep
+!data/*.csv
 models/
 similarity_results/
 *.pth
