@@ -1,11 +1,13 @@
 import csv
 import os
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
 from PIL import Image
 from tqdm import tqdm
@@ -98,11 +100,11 @@ class ImageSimilaritySearch:
         """Generate embedding for a single image with augmentations and color histograms."""
         augmentations = [
             image,
-            image.rotate(90),
-            image.rotate(180),
-            image.rotate(270),
-            image.transpose(Image.FLIP_LEFT_RIGHT),
-            image.transpose(Image.FLIP_TOP_BOTTOM),
+            image.rotate(90, expand=True),
+            image.rotate(180, expand=True),
+            image.rotate(270, expand=True),
+            image.transpose(Image.FLIP_LEFT_RIGHT),  # type: ignore
+            image.transpose(Image.FLIP_TOP_BOTTOM),  # type: ignore
         ]
 
         embeddings = []
@@ -190,7 +192,7 @@ class ImageSimilaritySearch:
                 self.save_results(query_image_path, results)
 
                 # Generate visualization
-                viz_path = self.visualizer.visualize_results(
+                _ = self.visualizer.visualize_results(
                     query_image_path, results, self.session_id, self.experiment_name
                 )
                 # print(f"\nVisualization saved to: {viz_path}")
@@ -320,11 +322,11 @@ def showcase_augmentations():
     image = Image.open("data/test_bg_removed/IMG_6944.png")
     augmentations = [
         image,
-        image.rotate(90),
-        image.rotate(180),
-        image.rotate(270),
-        image.transpose(Image.FLIP_LEFT_RIGHT),
-        image.transpose(Image.FLIP_TOP_BOTTOM),
+        image.rotate(90, expand=True, fillcolor="white"),
+        image.rotate(180, expand=True, fillcolor="white"),
+        image.rotate(270, expand=True, fillcolor="white"),
+        image.transpose(Image.FLIP_LEFT_RIGHT),  # type: ignore
+        image.transpose(Image.FLIP_TOP_BOTTOM),  # type: ignore
     ]
 
     plt.figure(figsize=(15, 10))
@@ -337,6 +339,238 @@ def showcase_augmentations():
     plt.show()
 
 
+def showcase_histogram_colors_augmentation():
+    image = Image.open("data/test_bg_removed/IMG_6944.png")
+    """Calculate color histograms for the image."""
+    image_np = np.array(image)
+    hist_r = np.histogram(image_np[:, :, 0], bins=16, range=(0, 256))[0]
+    hist_g = np.histogram(image_np[:, :, 1], bins=16, range=(0, 256))[0]
+    hist_b = np.histogram(image_np[:, :, 2], bins=16, range=(0, 256))[0]
+
+    # Normalize histograms
+    hist_r = hist_r / np.sum(hist_r)
+    hist_g = hist_g / np.sum(hist_g)
+    hist_b = hist_b / np.sum(hist_b)
+
+    # Concatenate histograms into a single vector
+    plt.figure(figsize=(15, 5))
+    plt.subplot(1, 3, 1)
+    plt.bar(range(16), hist_r, color="red")
+    plt.title("Red Histogram")
+    plt.subplot(1, 3, 2)
+    plt.bar(range(16), hist_g, color="green")
+    plt.title("Green Histogram")
+    plt.subplot(1, 3, 3)
+    plt.bar(range(16), hist_b, color="blue")
+    plt.title("Blue Histogram")
+    plt.tight_layout()
+    plt.show()
+
+
+def showcase_category_grid(csv_path, dam_dir, categories=None, samples_per_category=3):
+    """
+    Display a grid of DAM images in a single plot, organized by category.
+
+    Args:
+        csv_path (str): Path to CSV with image metadata
+        dam_dir (str): Path to directory containing DAM images
+        categories (list): List of categories to show (None for all)
+        samples_per_category (int): Number of images per category to display
+    """
+    # Read category mappings from CSV
+    mmc_to_category = {}
+    with open(csv_path, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            mmc = row["MMC"]
+            category = row["Product_BusinessUnitDesc"]
+            mmc_to_category[mmc] = category
+
+    # Map DAM images to categories
+    category_images = defaultdict(list)
+    for filename in os.listdir(dam_dir):
+        if filename.lower().endswith((".png", ".jpg", ".jpeg")):
+            mmc = os.path.splitext(filename)[0]
+            if mmc in mmc_to_category:
+                category = mmc_to_category[mmc]
+                category_images[category].append(filename)
+
+    # Determine which categories to display
+    display_categories = categories or category_images.keys()
+    valid_categories = [c for c in display_categories if category_images.get(c)]
+
+    if not valid_categories:
+        print("No images found for specified categories")
+        return
+
+    # Create figure grid
+    n_rows = len(valid_categories)
+    n_cols = samples_per_category
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(15, 3 * n_rows))
+    plt.subplots_adjust(wspace=0.1, hspace=0.3)
+
+    # Plot images in grid
+    for row_idx, category in enumerate(valid_categories):
+        images = category_images[category][:samples_per_category]
+
+        for col_idx in range(n_cols):
+            ax = axs[row_idx, col_idx] if n_rows > 1 else axs[col_idx]
+            ax.axis("off")
+
+            if col_idx < len(images):
+                try:
+                    img_path = os.path.join(dam_dir, images[col_idx])
+                    img = Image.open(img_path)
+                    ax.imshow(img)
+                    ax.set_title(images[col_idx], fontsize=8)
+                except Exception as e:
+                    ax.text(0.5, 0.5, f"Error\n{str(e)}", ha="center")
+
+            # Add category label to first column
+            if col_idx == 0:
+                ax.text(
+                    -0.3,
+                    0.5,
+                    category,
+                    transform=ax.transAxes,
+                    va="center",
+                    ha="right",
+                    fontsize=12,
+                    rotation=0,
+                )
+
+    plt.tight_layout()
+    plt.show()
+
+
+def evaluate_vit_classification(searcher):
+    df = pd.read_csv("data/labels.csv")
+    df = df.rename(columns={"label_image_name": "MMC"})
+    df["test_image_name"] = df["test_image_name"].apply(lambda x: x.split(".")[0])
+
+    categories = pd.read_csv("data/product_list.csv")
+    categories["MMC"] = categories["MMC"] + ".jpeg"
+
+    df = df.merge(categories, on="MMC", how="left")
+
+    correct_predictions = 0
+    total_predictions = 0
+
+    for image_path in tqdm(os.listdir("data/test_bg_removed")):
+        similar_images = searcher.find_similar_images(
+            "data/test_bg_removed/" + image_path
+        )
+        if not similar_images:
+            continue
+
+        similar_image_path = similar_images[0][0].split("/")[-1]
+
+        predicted_category_row = df[df["MMC"] == similar_image_path]
+        true_category_row = df[df["test_image_name"] == image_path.split(".")[0]]
+
+        if not predicted_category_row.empty and not true_category_row.empty:
+            predicted_category = predicted_category_row[
+                "Product_BusinessUnitDesc"
+            ].values[0]
+            true_category = true_category_row["Product_BusinessUnitDesc"].values[0]
+        else:
+            continue
+
+        if predicted_category == true_category:
+            correct_predictions += 1
+        total_predictions += 1
+
+    accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
+    print(f"Classification Accuracy: {accuracy:.4f}")
+
+
+def calculate_hits():
+    # Read test images labels to build mappings
+    test_image_to_category = {}
+    mmc_to_category = {}
+    with open("data/test_images_labels_with_categories.csv", "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # Process test_image_name by removing extension
+            test_image_name = row["test_image_name"].split(".")[0]
+            mmc = row["MMC"]
+            category = row["Product_BusinessUnitDesc"]
+            test_image_to_category[test_image_name] = category
+            # Build MMC to category mapping
+            mmc_to_category[mmc] = category  # assumes MMC is unique per category
+
+    # Read results and compute hits per category
+    category_stats = defaultdict(
+        lambda: {"total": 0, "hits1": 0, "hits3": 0, "hits5": 0, "hits10": 0}
+    )
+    with open(
+        "data/results/bg_removed_evaluation_20250129_074752/results_history.csv", "r"
+    ) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            test_image = row["test_image"]
+            test_image_wo_ext = test_image.split(".")[0]
+            # Skip if test image not found in labels
+            if test_image_wo_ext not in test_image_to_category:
+                continue
+            true_category = test_image_to_category[test_image_wo_ext]
+
+            # Extract similar images (up to 20 as per headers)
+            similar_images = [row[f"similar_image{i}"] for i in range(20)]
+
+            # Initialize hit flags for each k
+            hit_1, hit_3, hit_5, hit_10 = False, False, False, False
+
+            # Check hits for each k value
+            for k in [1, 3, 5, 10]:
+                top_k_images = similar_images[:k]
+                categories_in_top_k = []
+                for img in top_k_images:
+                    mmc = img.split(".")[0]
+                    category = mmc_to_category.get(mmc, None)
+                    categories_in_top_k.append(category)
+                # Check if true_category is in the list
+                if true_category in categories_in_top_k:
+                    if k == 1:
+                        hit_1 = True
+                    elif k == 3:
+                        hit_3 = True
+                    elif k == 5:
+                        hit_5 = True
+                    elif k == 10:
+                        hit_10 = True
+
+            # Update the category statistics
+            category_stats[true_category]["total"] += 1
+            if hit_1:
+                category_stats[true_category]["hits1"] += 1
+            if hit_3:
+                category_stats[true_category]["hits3"] += 1
+            if hit_5:
+                category_stats[true_category]["hits5"] += 1
+            if hit_10:
+                category_stats[true_category]["hits10"] += 1
+
+    # Calculate the hit percentages for each category
+    result = {}
+    for category, stats in category_stats.items():
+        total = stats["total"]
+        if total == 0:
+            continue  # avoid division by zero
+        hits1 = (stats["hits1"] / total) * 100
+        hits3 = (stats["hits3"] / total) * 100
+        hits5 = (stats["hits5"] / total) * 100
+        hits10 = (stats["hits10"] / total) * 100
+        result[category] = {
+            "hits@1": hits1,
+            "hits@3": hits3,
+            "hits@5": hits5,
+            "hits@10": hits10,
+        }
+
+    return result
+
+
 def main():
     try:
         # Initialize the search system with experiment name
@@ -344,9 +578,15 @@ def main():
         searcher = ImageSimilaritySearch(experiment_name=experiment_name)
         visualizer = SimilarityVisualizer()
 
+        # --------- Preprocessing (once only) ---------
+        # Remove duplicates
+        # from remove_duplicates import remove_duplicates
+        # remove_duplicates("data/DAM", "data/labels.csv")
+
         # Preprocess images with background removal
 
         # Process catalog images
+        # from background_removal import remove_backgrounds
         # remove_backgrounds(
         #     input_folder="data/DAM",
         #     output_folder="data/DAM_bg_removed",
@@ -357,6 +597,7 @@ def main():
         #     input_folder="data/test_image_headmind",
         #     output_folder="data/test_bg_removed",
         # )
+        # --------- End of preprocessing ---------
 
         # Build catalog with bg-removed images
         searcher.build_catalog("data/DAM")

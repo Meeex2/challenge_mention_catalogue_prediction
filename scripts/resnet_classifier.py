@@ -40,7 +40,9 @@ class DAMDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         image_file = self.image_files[idx]
         mmc_code = os.path.splitext(image_file)[0]
-        category = self.mmc_to_category.get(mmc_code, "Unknown")
+        category = self.mmc_to_category.get(mmc_code, "Uknown")
+        if category == "Unkown":
+            logging.log.INFO(f"Missing: {idx} - {image_file} - {mmc_code} - {category}")
         category_idx = self.categories.index(category)
 
         image_path = os.path.join(self.image_dir, image_file)
@@ -101,7 +103,7 @@ class CategoryClassifier:
         """Load the model if a saved model exists."""
         if os.path.exists(self.model_save_path):
             self.model.load_state_dict(
-                torch.load(self.model_save_path, weights_only=True)
+                torch.load(self.model_save_path, weights_only=False)
             )
             logging.info(f"Loaded model from {self.model_save_path}")
 
@@ -282,6 +284,11 @@ def main():
     df = pd.read_csv(CSV_PATH)
     df.columns = df.columns.str.strip()
     mmc_to_category = dict(zip(df["MMC"], df["Product_BusinessUnitDesc"]))
+
+    test_df = pd.read_csv("data/test_images_labels_with_categories.csv")
+    test_mmc_to_category = dict(
+        zip(test_df["test_image_name"], test_df["Product_BusinessUnitDesc"])
+    )
     categories = sorted(df["Product_BusinessUnitDesc"].unique())
 
     full_dataset = DAMDataset(
@@ -290,12 +297,19 @@ def main():
         transform=get_transforms(is_training=True),
     )
 
+    test_dataset = DAMDataset(
+        image_dir="data/test_bg_removed",
+        mmc_to_category=test_mmc_to_category,  # type: ignore
+        transform=get_transforms(is_training=False),
+    )
+
     train_dataset, val_dataset = create_train_val_datasets(
         full_dataset, val_size=VAL_SIZE, random_state=RANDOM_STATE
     )
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
 
     # Initialize and train classifier
     classifier = CategoryClassifier(
@@ -312,8 +326,11 @@ def main():
     logging.info("Training completed successfully")
 
     # Load the best model and evaluate
-    classifier.model.load_state_dict(torch.load(MODEL_SAVE_PATH, weights_only=True))
-    evaluate_model(classifier, train_loader)
+    # classifier.model.load_state_dict(torch.load(MODEL_SAVE_PATH, weights_only=True))
+    evaluate_model(classifier, val_loader)
+
+    print("Evaluating on test:")
+    evaluate_model(classifier, test_loader)
 
 
 if __name__ == "__main__":

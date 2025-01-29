@@ -138,3 +138,8 @@ Hit@1: 0.3500 (28/80)
 Hit@3: 0.5375 (43/80)
 Hit@5: 0.5875 (47/80)
 Hit@10: 0.6750 (54/80)
+
+## Wed.29 Jan
+
+Evaluating ViT classification capability; it is better than ResNEt the we trained => no need to filter
+Classification Accuracy: 0.9556
