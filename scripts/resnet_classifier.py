@@ -40,9 +40,7 @@ class DAMDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         image_file = self.image_files[idx]
         mmc_code = os.path.splitext(image_file)[0]
-        category = self.mmc_to_category.get(mmc_code, "Uknown")
-        if category == "Unkown":
-            logging.log.INFO(f"Missing: {idx} - {image_file} - {mmc_code} - {category}")
+        category = self.mmc_to_category.get(mmc_code, "Unkown")
         category_idx = self.categories.index(category)
 
         image_path = os.path.join(self.image_dir, image_file)
@@ -276,7 +274,7 @@ def main():
     CSV_PATH = os.path.join(DATA_DIR, "product_list.csv")
     MODEL_SAVE_PATH = os.path.join("models", f"resnet_{RESNET_VERSION}_model.pth")
     BATCH_SIZE = 32
-    NUM_EPOCHS = 5
+    NUM_EPOCHS = 10
     VAL_SIZE = 0.2
     RANDOM_STATE = 42
 
@@ -326,7 +324,8 @@ def main():
     logging.info("Training completed successfully")
 
     # Load the best model and evaluate
-    # classifier.model.load_state_dict(torch.load(MODEL_SAVE_PATH, weights_only=True))
+    classifier.model.load_state_dict(torch.load(MODEL_SAVE_PATH, weights_only=True))
+    print("Evaluating on validation set:")
     evaluate_model(classifier, val_loader)
 
     print("Evaluating on test:")

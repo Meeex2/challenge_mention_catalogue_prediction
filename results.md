@@ -143,3 +143,17 @@ Hit@10: 0.6750 (54/80)
 
 Evaluating ViT classification capability; it is better than ResNEt the we trained => no need to filter
 Classification Accuracy: 0.9556
+
+| Metric    | W Bags     | W SLG   | W Shoes   | W Accessories | Watches |
+|-----------|------------|---------|-----------|---------------|---------|
+| hits@1    | 33.333333  | 25.0    | 39.285714 | 42.857143     | 0.0     |
+| hits@3    | 54.166667  | 75.0    | 75.000000 | 80.952381     | 0.0     |
+| hits@5    | 62.500000  | 100.0   | 82.142857 | 90.476190     | 0.0     |
+| hits@10   | 79.166667  | 100.0   | 96.428571 | 95.238095     | 0.0     |
+
+Dinov2 (full pipeline)
+Evaluation Results:
+Hit@1: 0.3375 (27/80)
+Hit@3: 0.5125 (41/80)
+Hit@5: 0.5625 (45/80)
+Hit@10: 0.7250 (58/80)

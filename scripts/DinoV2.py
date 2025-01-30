@@ -11,7 +11,7 @@ import pandas as pd
 import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import ViTImageProcessor, ViTModel
+from transformers import AutoModel, AutoProcessor
 
 
 class SimilarityVisualizer:
@@ -65,12 +65,13 @@ class SimilarityVisualizer:
 class ImageSimilaritySearch:
     def __init__(
         self,
-        model_name: str = "google/vit-base-patch16-224-in21k",
+        #  model_name: str = "google/vit-base-patch16-224-in21k",
+        model_name: str = "facebook/dinov2-base",
         experiment_name: str = "default_experiment",
     ):
         """Initialize the image similarity search system with a ViT model."""
-        self.processor = ViTImageProcessor.from_pretrained(model_name)
-        self.model = ViTModel.from_pretrained(
+        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(
             model_name, attn_implementation="sdpa", torch_dtype=torch.float16
         )
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -113,9 +114,11 @@ class ImageSimilaritySearch:
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
             with torch.no_grad():
-                outputs = self.model(**inputs)
+                # outputs = self.model(**inputs)
+                outputs = self.model(**inputs).last_hidden_state[0]
 
-            embeddings.append(outputs.pooler_output.cpu().numpy()[0])
+            # embeddings.append(outputs.pooler_output.cpu().numpy()[0])
+            embeddings.append(outputs.cpu().numpy()[0])
 
         # Average the embeddings
         avg_embedding = np.mean(embeddings, axis=0)
@@ -484,7 +487,7 @@ def evaluate_vit_classification(searcher):
     print(f"Classification Accuracy: {accuracy:.4f}")
 
 
-def calculate_hits(results_file):
+def calculate_hits(result_csv_name):
     # Read test images labels to build mappings
     test_image_to_category = {}
     mmc_to_category = {}
@@ -503,7 +506,7 @@ def calculate_hits(results_file):
     category_stats = defaultdict(
         lambda: {"total": 0, "hits1": 0, "hits3": 0, "hits5": 0, "hits10": 0}
     )
-    with open(results_file, "r") as f:
+    with open(result_csv_name, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             test_image = row["test_image"]
@@ -620,8 +623,6 @@ def main():
                 query_image_path, results, searcher.session_id, experiment_name
             )
         print(f"\nAll results saved to: data/results/{searcher.session_id}")
-
-        calculate_hits(f"data/results/{searcher.session_id}/results_history.csv")
 
     except Exception as e:
         print(f"An error occurred: {e}")
